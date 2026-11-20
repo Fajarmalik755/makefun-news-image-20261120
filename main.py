@@ -1,78 +1,80 @@
-"""Hand over the finished front page.
+#!/usr/bin/env python3
+"""Entry point for the make.fun news-image-20261120 v2 submission.
 
-The picture itself was already drawn by the generator and sits beside
-this file as entry.png. This program only delivers it: it copies that
-file to the folder the grader reads from, then proves the copy is exact
-by comparing size and sha256. It never draws, downloads, or changes
-anything, so running it twice always produces the same bytes.
+Copies the pre-rendered entry.png (built by build_image.py in this
+same directory) into $MAKEFUN_OUTPUT_DIR/entry.png, then verifies the
+copy byte-for-byte. No network, no image generation at run time: the
+program is deterministic because the PNG is fixed and checked by hash.
+
+Expected layout:
+    <repo root>/
+        main.py        (this file)
+        entry.png      (1024x1024, built by build_image.py)
 """
-
-from __future__ import annotations
-
 import hashlib
 import os
+import shutil
 import sys
-from pathlib import Path
 
-BLOCK = 1 << 16
-PICTURE = "entry.png"
-FALLBACK_DIR = "/output"
+# The PNG this program ships. Filled in at build time by build_image.py
+# (kept in sync by the build script's own self-check).
+EXPECTED_SHA256 = "2ae9a5dd74c626c8f33a0cc18318d85a9c9190a1198e611dd3708fd3d945592d"
+EXPECTED_BYTES = 209983
 
-
-def picture_next_to_this_file() -> Path:
-    return Path(__file__).resolve().parent / PICTURE
+SOURCE_NAME = "entry.png"
 
 
-def where_the_copy_goes() -> Path:
-    folder = os.environ.get("MAKEFUN_OUTPUT_DIR") or FALLBACK_DIR
-    return Path(folder) / PICTURE
+def sha256_of(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(65536), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
-def fingerprint(path: Path) -> tuple[int, str]:
-    summer = hashlib.sha256()
-    size = 0
-    with path.open("rb") as stream:
-        while True:
-            piece = stream.read(BLOCK)
-            if not piece:
-                break
-            size += len(piece)
-            summer.update(piece)
-    return size, summer.hexdigest()
+def fail(message):
+    print("main.py: ERROR: " + message, file=sys.stderr)
+    return 1
 
 
-def move_picture(source: Path, target: Path) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with source.open("rb") as reader, target.open("wb") as writer:
-        while True:
-            piece = reader.read(BLOCK)
-            if not piece:
-                break
-            writer.write(piece)
+def main():
+    here = os.path.dirname(os.path.abspath(__file__))
+    source = os.path.join(here, SOURCE_NAME)
 
+    out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR")
+    if not out_dir:
+        return fail("MAKEFUN_OUTPUT_DIR is not set")
 
-def check_copy(source: Path, target: Path) -> None:
-    before = fingerprint(source)
-    after = fingerprint(target)
-    if before != after:
-        raise SystemExit(
-            "copy does not match source: source is "
-            f"{before[0]} bytes {before[1]}, copy is "
-            f"{after[0]} bytes {after[1]}"
-        )
+    if not os.path.isfile(source):
+        return fail("source image missing: " + source)
 
+    size = os.path.getsize(source)
+    if size != EXPECTED_BYTES:
+        return fail("source size %d != expected %d" % (size, EXPECTED_BYTES))
 
-def run() -> None:
-    origin = picture_next_to_this_file()
-    if not origin.is_file():
-        raise SystemExit(
-            f"cannot deliver the front page: {origin} is missing, "
-            "so there is nothing to copy"
-        )
-    destination = where_the_copy_goes()
-    move_picture(origin, destination)
-    check_copy(origin, destination)
+    with open(source, "rb") as handle:
+        magic = handle.read(8)
+    if magic != b"\x89PNG\r\n\x1a\n":
+        return fail("source is not a PNG file")
+
+    digest = sha256_of(source)
+    if digest != EXPECTED_SHA256:
+        return fail("source sha256 %s != expected %s" % (digest, EXPECTED_SHA256))
+
+    os.makedirs(out_dir, exist_ok=True)
+    target = os.path.join(out_dir, SOURCE_NAME)
+    shutil.copyfile(source, target)
+
+    # Verify the copy, not just the source.
+    if os.path.getsize(target) != EXPECTED_BYTES:
+        return fail("copied size mismatch")
+    if sha256_of(target) != EXPECTED_SHA256:
+        return fail("copied sha256 mismatch")
+
+    print("main.py: wrote %s (%d bytes, sha256 %s)"
+          % (target, EXPECTED_BYTES, EXPECTED_SHA256))
+    return 0
 
 
 if __name__ == "__main__":
-    run()
+    sys.exit(main())
